@@ -8,23 +8,65 @@ on:
 
 jobs:
   build:
-    name: Build and analyse default scheme using xcodebuild command
+    name: Build and Analyze Default Scheme Using xcodebuild
     runs-on: macos-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: List Directory Contents
+        run: ls -la
+
       - name: Set Default Scheme
+        id: set_scheme
         run: |
-          scheme_list=$(xcodebuild -list -json | tr -d "\n")
-          default=$(echo $scheme_list | ruby -e "require 'json'; puts JSON.parse(STDIN.gets)['project']['targets'][0]")
-          echo $default | cat >default
-          echo Using default scheme: $default
-      - name: Build
+          # 获取项目或工作区
+          if ls *.xcworkspace 1> /dev/null 2>&1; then
+            PROJECT_FILE=$(ls *.xcworkspace)
+            FILE_TYPE="workspace"
+          elif ls *.xcodeproj 1> /dev/null 2>&1; then
+            PROJECT_FILE=$(ls *.xcodeproj)
+            FILE_TYPE="project"
+          else
+            echo "No .xcworkspace or .xcodeproj file found!"
+            exit 1
+          fi
+
+          # 获取 schemes 列表
+          SCHEMES=$(xcodebuild -list -json -workspace "$PROJECT_FILE" | jq -r '.workspace.schemes[]? // .project.schemes[]?')
+
+          if [ -z "$SCHEMES" ]; then
+            echo "No schemes found in the project."
+            exit 1
+          fi
+
+          # 选择第一个 scheme 作为默认
+          DEFAULT_SCHEME=$(echo "$SCHEMES" | head -n 1)
+          echo "Default scheme selected: $DEFAULT_SCHEME"
+
+          # 设置输出变量
+          echo "::set-output name=SCHEME::$DEFAULT_SCHEME"
+          echo "::set-output name=FILE_TYPE::$FILE_TYPE"
+          echo "::set-output name=PROJECT_FILE::$PROJECT_FILE"
+
+      - name: Build and Analyze
         env:
-          scheme: ${{ 'default' }}
+          SCHEME: ${{ steps.set_scheme.outputs.SCHEME }}
+          FILE_TYPE: ${{ steps.set_scheme.outputs.FILE_TYPE }}
+          PROJECT_FILE: ${{ steps.set_scheme.outputs.PROJECT_FILE }}
         run: |
-          if [ $scheme = default ]; then scheme=$(cat default); fi
-          if [ "`ls -A | grep -i \\.xcworkspace\$`" ]; then filetype_parameter="workspace" && file_to_build="`ls -A | grep -i \\.xcworkspace\$`"; else filetype_parameter="project" && file_to_build="`ls -A | grep -i \\.xcodeproj\$`"; fi
-          file_to_build=`echo $file_to_build | awk '{$1=$1;print}'`
-          xcodebuild clean build analyze -scheme "$scheme" -"$filetype_parameter" "$file_to_build" | xcpretty && exit ${PIPESTATUS[0]}
+          echo "Building scheme: $SCHEME"
+          echo "Project file: $PROJECT_FILE"
+          
+          xcodebuild clean build analyze \
+            -scheme "$SCHEME" \
+            -$FILE_TYPE "$PROJECT_FILE" \
+            | xcpretty
+
+          # 捕获 xcodebuild 的退出状态
+          EXIT_STATUS=${PIPESTATUS[0]}
+          if [ $EXIT_STATUS -ne 0 ]; then
+            echo "xcodebuild failed with exit status $EXIT_STATUS"
+            exit $EXIT_STATUS
+          fi
